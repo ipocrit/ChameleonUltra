@@ -1,4 +1,4 @@
-#!/bin/env bash
+#!/usr/bin/env bash
 
 if [[ $BASH_SOURCE = */* ]]; then
   cd -- "${BASH_SOURCE%/*}/" || exit
@@ -19,6 +19,31 @@ case $device_type in
   "lite")  hw_version=1 ;;
   *)       echo "Unknown CURRENT_DEVICE_TYPE $CURRENT_DEVICE_TYPE, aborting."; exit 1 ;;
 esac
+
+merge_hex() {
+  local output="$1"
+  shift
+
+  if command -v mergehex >/dev/null 2>&1; then
+    mergehex --merge "$@" --output "$output"
+    return
+  fi
+
+  python3 - "$output" "$@" <<'PY'
+from intelhex import IntelHex
+import sys
+
+output, *inputs = sys.argv[1:]
+merged = IntelHex()
+for path in inputs:
+    image = IntelHex(path)
+    # These images carry different execution-start records. Nordic mergehex
+    # ignores that metadata; retain strict overlap checking for flash data.
+    image.start_addr = None
+    merged.merge(image, overlap="error")
+merged.write_hex_file(output)
+PY
+}
 
 echo "Building firmware for $device_type (hw_version=$hw_version)"
 
@@ -61,18 +86,14 @@ rm -rf "objects"
     --softdevice softdevice.hex \
     --bootloader-version $bootloader_version --bl-settings-version 2 \
     settings.hex
-  mergehex \
-    --merge \
+  merge_hex application_merged.hex \
     settings.hex \
-    application.hex \
-    --output application_merged.hex
+    application.hex
 
-  mergehex \
-    --merge \
-      bootloader.hex \
-      application_merged.hex \
-      softdevice.hex \
-    --output fullimage.hex
+  merge_hex fullimage.hex \
+    bootloader.hex \
+    application_merged.hex \
+    softdevice.hex
 
   tmp_dir=$(mktemp -d -t cu_binaries_XXXXXXXXXX)
   cp *.hex "$tmp_dir"

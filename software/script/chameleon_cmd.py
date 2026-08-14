@@ -14,6 +14,15 @@ new_key = b'\x20\x20\x66\x66'
 old_keys = [b'\x51\x24\x36\x48', b'\x19\x92\x04\x27']
 
 
+def is_em410x_base_type(tag_type: TagSpecificType) -> bool:
+    return tag_type in (
+        TagSpecificType.EM410X,
+        TagSpecificType.EM410X_16,
+        TagSpecificType.EM410X_32,
+        TagSpecificType.EM410X_64,
+    )
+
+
 class ChameleonCMD:
     """
         Chameleon cmd function
@@ -945,7 +954,7 @@ class ChameleonCMD:
         lf_tag_type = self._get_active_lf_tag_type()
         if lf_tag_type == TagSpecificType.EM410X_ELECTRA:
             expected_len = 13
-        elif lf_tag_type == TagSpecificType.EM410X:
+        elif is_em410x_base_type(lf_tag_type):
             expected_len = 5
         else:
             raise ValueError(f"Active LF slot type {lf_tag_type} is not EM410X")
@@ -973,7 +982,7 @@ class ChameleonCMD:
                 except ValueError:
                     candidate = None
 
-                if candidate in (TagSpecificType.EM410X, TagSpecificType.EM410X_ELECTRA):
+                if is_em410x_base_type(candidate) or candidate == TagSpecificType.EM410X_ELECTRA:
                     expected_len = 13 if candidate == TagSpecificType.EM410X_ELECTRA else 5
                     if len(data) == expected_len + 2:
                         tag_type = candidate
@@ -983,7 +992,7 @@ class ChameleonCMD:
                 lf_tag_type = self._get_active_lf_tag_type()
                 if lf_tag_type == TagSpecificType.EM410X_ELECTRA:
                     expected_len = 13
-                elif lf_tag_type == TagSpecificType.EM410X:
+                elif is_em410x_base_type(lf_tag_type):
                     expected_len = 5
                 else:
                     expected_len = len(data)
@@ -1548,6 +1557,24 @@ class ChameleonCMD:
         """
         data = struct.pack('!B', seconds)
         return self.device.send_cmd_sync(Command.SET_SLEEP_TIMEOUT, data)
+
+    @expect_response(Status.SUCCESS)
+    def get_slot_poll(self):
+        """
+        Get whether automatic slot polling is enabled
+        """
+        resp = self.device.send_cmd_sync(Command.GET_SLOT_POLL)
+        if resp.status == Status.SUCCESS:
+            resp.parsed = bool(resp.data[0])
+        return resp
+
+    @expect_response(Status.SUCCESS)
+    def set_slot_poll(self, enabled: bool):
+        """
+        Enable or disable automatic slot polling
+        """
+        data = struct.pack('!B', 1 if enabled else 0)
+        return self.device.send_cmd_sync(Command.SET_SLOT_POLL, data)
 
     @expect_response(Status.SUCCESS)
     def reset_settings(self):

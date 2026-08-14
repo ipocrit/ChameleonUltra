@@ -61,6 +61,10 @@ bool is_lf_field_exists(void) {
     return nrf_lpcomp_result_get() == 1;  // Determine the sampling results of the LF field status
 }
 
+bool lf_tag_is_emulating(void) {
+    return m_is_lf_emulating;
+}
+
 /**
  * @brief LPCOMP event handler is called when LPCOMP detects voltage drop.
  *
@@ -193,6 +197,10 @@ static enum {
     LF_SENSE_STATE_ENABLE,
 } m_lf_sense_state = LF_SENSE_STATE_NONE;
 
+bool lf_tag_is_sensing(void) {
+    return m_lf_sense_state == LF_SENSE_STATE_ENABLE;
+}
+
 static uint16_t lf_em410x_id_size(tag_specific_type_t type) {
     return type == TAG_TYPE_EM410X_ELECTRA ? LF_EM410X_ELECTRA_TAG_ID_SIZE : LF_EM410X_TAG_ID_SIZE;
 }
@@ -224,13 +232,16 @@ void lf_tag_125khz_sense_switch(bool enable) {
 int lf_tag_data_loadcb(tag_specific_type_t type, tag_data_buffer_t *buffer) {
     // ensure buffer size is large enough for specific tag type,
     // so that tag data (e.g., card numbers) can be converted to corresponding pwm sequence here.
-    if ((type == TAG_TYPE_EM410X || type == TAG_TYPE_EM410X_ELECTRA) && buffer->length >= lf_em410x_id_size(type)) {
-        const protocol *p = type == TAG_TYPE_EM410X_ELECTRA ? &em410x_electra : &em410x_64;
+    if ((em410x_is_base_type(type) || type == TAG_TYPE_EM410X_ELECTRA) && buffer->length >= lf_em410x_id_size(type)) {
+        const protocol *p = em410x_protocol_for_type(type);
+        if (p == NULL) {
+            return 0;
+        }
         m_tag_type = type;
         void *codec = p->alloc();
         m_pwm_seq = p->modulator(codec, buffer->buffer);
         p->free(codec);
-        NRF_LOG_INFO("load lf em410x%s data finish.", type == TAG_TYPE_EM410X_ELECTRA ? " electra" : "");
+        NRF_LOG_INFO("load lf em410x type %d data finish.", type);
         return lf_em410x_id_size(type);
     }
 
@@ -300,7 +311,7 @@ int lf_tag_data_loadcb(tag_specific_type_t type, tag_data_buffer_t *buffer) {
 int lf_tag_em410x_data_savecb(tag_specific_type_t type, tag_data_buffer_t *buffer) {
     // Make sure to load this tag before allowing saving
     // Just save the original card package directly
-    if (m_tag_type == TAG_TYPE_EM410X) {
+    if (em410x_is_base_type(m_tag_type)) {
         return LF_EM410X_TAG_ID_SIZE;
     }
     if (m_tag_type == TAG_TYPE_EM410X_ELECTRA) {
@@ -372,6 +383,9 @@ bool lf_tag_em410x_data_factory(uint8_t slot, tag_specific_type_t tag_type) {
         case TAG_TYPE_EM410X_ELECTRA:
             return lf_tag_data_factory(slot, tag_type, (uint8_t *)tag_id_electra, sizeof(tag_id_electra));
         case TAG_TYPE_EM410X:
+        case TAG_TYPE_EM410X_16:
+        case TAG_TYPE_EM410X_32:
+        case TAG_TYPE_EM410X_64:
             return lf_tag_data_factory(slot, tag_type, (uint8_t *)tag_id_base, sizeof(tag_id_base));
         default:
             return false;

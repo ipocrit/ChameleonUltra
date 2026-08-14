@@ -34,6 +34,9 @@ NRF_LOG_MODULE_REGISTER();
 #include "dataframe.h"
 #include "fds_util.h"
 #include "hex_utils.h"
+#include "lf_tag_em.h"
+#include "nfc_14a.h"
+#include "protocols/em410x.h"
 #include "rfid_main.h"
 #include "syssleep.h"
 #include "tag_emulation.h"
@@ -48,8 +51,16 @@ NRF_LOG_MODULE_REGISTER();
 
 // Defining soft timers
 APP_TIMER_DEF(m_button_check_timer); // Timer for button debounce
+APP_TIMER_DEF(m_slot_poll_timer);    // Timer for automatic slot polling
+
+#define SLOT_POLL_INTERVAL_MS 200
+#define SLOT_POLL_LF_INTERVAL_MS 500
 
 static uint32_t m_last_btn_press = 0;
+
+static volatile bool m_slot_poll_pending = false;
+static tag_sense_type_t m_slot_poll_active_sense = TAG_SENSE_NO;
+static uint32_t m_slot_poll_last_change = 0;
 
 static bool m_is_btn_long_press = false;
 
@@ -94,6 +105,21 @@ void assert_nrf_callback(uint16_t line_num, const uint8_t *p_file_name) {
  */
 static void app_timers_init(void) {
     ret_code_t err_code = app_timer_init();
+    APP_ERROR_CHECK(err_code);
+}
+
+static void slot_poll_timer_event_handle(void *arg) {
+    (void)arg;
+    m_slot_poll_pending = true;
+}
+
+static void slot_poll_init(void) {
+    ret_code_t err_code;
+
+    err_code = app_timer_create(&m_slot_poll_timer, APP_TIMER_MODE_REPEATED, slot_poll_timer_event_handle);
+    APP_ERROR_CHECK(err_code);
+
+    err_code = app_timer_start(m_slot_poll_timer, APP_TIMER_TICKS(SLOT_POLL_INTERVAL_MS), NULL);
     APP_ERROR_CHECK(err_code);
 }
 
@@ -595,6 +621,153 @@ static void cycle_slot(bool dec) {
     apply_slot_change(slot_now, slot_new);
 }
 
+static void slot_poll_restore_sense(void) {
+    uint8_t slot = tag_emulation_get_slot();
+    tag_slot_specific_type_t tag_types;
+    tag_emulation_get_specific_types_by_slot(slot, &tag_types);
+
+    tag_emulation_sense_switch(TAG_SENSE_HF, is_slot_enabled(slot, TAG_SENSE_HF) && tag_types.tag_hf != TAG_TYPE_UNDEFINED);
+    tag_emulation_sense_switch(TAG_SENSE_LF, is_slot_enabled(slot, TAG_SENSE_LF) && tag_types.tag_lf != TAG_TYPE_UNDEFINED);
+}
+
+static void slot_poll_apply_exclusive_sense(tag_sense_type_t sense_type) {
+    if (sense_type == TAG_SENSE_LF) {
+        tag_emulation_sense_switch(TAG_SENSE_HF, false);
+        tag_emulation_sense_switch(TAG_SENSE_LF, true);
+        return;
+    }
+    if (sense_type == TAG_SENSE_HF) {
+        tag_emulation_sense_switch(TAG_SENSE_LF, false);
+        tag_emulation_sense_switch(TAG_SENSE_HF, true);
+    }
+}
+
+static void slot_poll_change_slot(uint8_t slot_now, uint8_t slot_new, tag_sense_type_t sense_type) {
+    tag_emulation_sense_end();
+    g_is_tag_emulating = false;
+    tag_emulation_set_slot(slot_new);
+    tag_emulation_load_data();
+
+    // Do not call tag_emulation_sense_run() here: it enables both bands for
+    // dual-frequency slots. Re-enable only the field that selected this slot
+    // before the (blocking) slot-change LED animation starts.
+    slot_poll_apply_exclusive_sense(sense_type);
+    apply_slot_change(slot_now, slot_new);
+}
+
+static void slot_poll_led_off(void) {
+    rgb_marquee_stop();
+    TAG_FIELD_LED_OFF();
+    uint32_t *led_pins = hw_get_led_array();
+    for (uint8_t i = 0; i < RGB_LIST_NUM; i++) {
+        nrf_gpio_pin_clear(led_pins[i]);
+    }
+}
+
+static bool slot_poll_slot_enabled_for_sense(uint8_t slot, tag_sense_type_t sense_type) {
+    tag_slot_specific_type_t tag_types;
+    tag_emulation_get_specific_types_by_slot(slot, &tag_types);
+
+    if (sense_type == TAG_SENSE_LF) {
+        return is_slot_enabled(slot, TAG_SENSE_LF) && tag_types.tag_lf != TAG_TYPE_UNDEFINED;
+    }
+    if (sense_type == TAG_SENSE_HF) {
+        return is_slot_enabled(slot, TAG_SENSE_HF) && tag_types.tag_hf != TAG_TYPE_UNDEFINED;
+    }
+    return false;
+}
+
+static uint8_t slot_poll_find_next_by_sense(uint8_t slot_now, tag_sense_type_t sense_type) {
+    uint8_t start_slot = (slot_now + 1 == TAG_MAX_SLOT_NUM) ? 0 : slot_now + 1;
+    for (uint8_t i = start_slot;;) {
+        if (i == slot_now) return slot_now;
+        if (slot_poll_slot_enabled_for_sense(i, sense_type)) return i;
+        i++;
+        if (i == TAG_MAX_SLOT_NUM) {
+            i = 0;
+        }
+    }
+    return slot_now;
+}
+
+static tag_sense_type_t slot_poll_get_active_sense(void) {
+    if (lf_tag_is_emulating()) {
+        return TAG_SENSE_LF;
+    }
+    if (g_is_tag_emulating && nfc_tag_14a_is_sensing()) {
+        uint8_t slot = tag_emulation_get_slot();
+        if (slot_poll_slot_enabled_for_sense(slot, TAG_SENSE_LF) && lf_tag_is_sensing() && is_lf_field_exists()) {
+            return TAG_SENSE_LF;
+        }
+        return TAG_SENSE_HF;
+    }
+    if (m_slot_poll_active_sense == TAG_SENSE_LF && lf_tag_is_sensing() && is_lf_field_exists()) {
+        return TAG_SENSE_LF;
+    }
+    return TAG_SENSE_NO;
+}
+
+static void slot_poll_process(void) {
+    bool poll_tick = m_slot_poll_pending;
+    m_slot_poll_pending = false;
+
+    if (get_device_mode() != DEVICE_MODE_TAG || m_is_field_on || !settings_get_slot_poll_enable()) {
+        if (m_slot_poll_active_sense != TAG_SENSE_NO) {
+            slot_poll_restore_sense();
+            m_slot_poll_active_sense = TAG_SENSE_NO;
+            m_slot_poll_last_change = 0;
+        }
+        return;
+    }
+
+    tag_sense_type_t sense_type = slot_poll_get_active_sense();
+    if (sense_type == TAG_SENSE_NO) {
+        if (m_slot_poll_active_sense != TAG_SENSE_NO) {
+            slot_poll_restore_sense();
+        }
+        m_slot_poll_active_sense = TAG_SENSE_NO;
+        m_slot_poll_last_change = 0;
+        slot_poll_led_off();
+        return;
+    }
+
+    uint32_t now = app_timer_cnt_get();
+    uint32_t interval = sense_type == TAG_SENSE_LF ? SLOT_POLL_LF_INTERVAL_MS : SLOT_POLL_INTERVAL_MS;
+    if (m_slot_poll_active_sense != sense_type) {
+        m_slot_poll_active_sense = sense_type;
+        m_slot_poll_last_change = now;
+        slot_poll_apply_exclusive_sense(sense_type);
+        if (sense_type == TAG_SENSE_LF && !lf_tag_is_emulating()) {
+            tag_emulation_sense_switch(TAG_SENSE_LF, false);
+            tag_emulation_sense_switch(TAG_SENSE_LF, true);
+        }
+        light_up_by_slot();
+        return;
+    }
+
+    slot_poll_apply_exclusive_sense(sense_type);
+
+    if (!poll_tick) {
+        return;
+    }
+    if (sense_type == TAG_SENSE_HF && nfc_tag_14a_has_session()) {
+        return;
+    }
+    if (app_timer_cnt_diff_compute(now, m_slot_poll_last_change) < APP_TIMER_TICKS(interval)) {
+        return;
+    }
+
+    uint8_t slot_now = tag_emulation_get_slot();
+    uint8_t slot_new = slot_poll_find_next_by_sense(slot_now, sense_type);
+
+    if (slot_new == slot_now) {
+        return;
+    }
+
+    m_slot_poll_last_change = now;
+    slot_poll_change_slot(slot_now, slot_new, sense_type);
+}
+
 static void show_battery(void) {
     rgb_marquee_stop();
     uint32_t *led_pins = hw_get_led_array();
@@ -679,13 +852,16 @@ static void btn_fn_copy_lf(uint8_t slot, tag_specific_type_t type) {
             data = id_buffer;
             break;
         case TAG_TYPE_EM410X:
+        case TAG_TYPE_EM410X_16:
+        case TAG_TYPE_EM410X_32:
+        case TAG_TYPE_EM410X_64:
         case TAG_TYPE_EM410X_ELECTRA: {
             status = scan_em410x(id_buffer);
             tag_specific_type_t detected_type = (id_buffer[0] << 8) | id_buffer[1];
             tag_specific_type_t new_type =
-                detected_type == TAG_TYPE_EM410X_ELECTRA ? TAG_TYPE_EM410X_ELECTRA : TAG_TYPE_EM410X;
+                (em410x_is_base_type(detected_type) || detected_type == TAG_TYPE_EM410X_ELECTRA) ? detected_type : TAG_TYPE_EM410X;
 
-            // If we read Electra but the slot was classic (or vice versa), switch slot type automatically.
+            // Keep the detected EM410X subtype in the slot so the selected clock period persists.
             if (new_type != type) {
                 tag_emulation_change_type(slot, new_type);
                 type = new_type;
@@ -698,6 +874,11 @@ static void btn_fn_copy_lf(uint8_t slot, tag_specific_type_t type) {
         case TAG_TYPE_VIKING:
             status = scan_viking(id_buffer);
             size = LF_VIKING_TAG_ID_SIZE;
+            data = id_buffer;
+            break;
+        case TAG_TYPE_PAC:
+            status = scan_pac(id_buffer);
+            size = LF_PAC_TAG_ID_SIZE;
             data = id_buffer;
             break;
         case TAG_TYPE_JABLOTRON:
@@ -947,15 +1128,17 @@ static void button_press_process(void) {
 
 extern bool g_usb_port_opened;
 static void blink_usb_led_status(void) {
+    if (get_device_mode() == DEVICE_MODE_TAG && !g_is_tag_emulating) {
+        return;
+    }
+
     uint8_t slot = tag_emulation_get_slot();
     uint8_t color = get_color_by_slot(slot);
     uint8_t dir = slot > 3 ? 1 : 0;
     static bool is_working = false;
     if (nrfx_power_usbstatus_get() == NRFX_POWER_USB_STATE_DISCONNECTED) {
         if (is_working) {
-            rgb_marquee_stop();
-            set_slot_light_color(color);
-            light_up_by_slot();
+            slot_poll_led_off();
             is_working = false;
         }
     } else {
@@ -1019,6 +1202,7 @@ int main(void) {
     button_init();            // Button initialization for handling business logic
     sleep_timer_init();       // Soft timer initialization for hibernation
     tag_emulation_init();     // Analog card initialization
+    slot_poll_init();         // Automatic slot polling
     rgb_marquee_init();       // Light effect initialization
 
     ble_passkey_init();       // init ble connect key.
@@ -1040,6 +1224,8 @@ int main(void) {
         lesc_event_process();
         // Button event process
         button_press_process();
+        // Automatic slot polling
+        slot_poll_process();
 
 #if defined(PROJECT_CHAMELEON_ULTRA)
         // Field generator rainbow animation

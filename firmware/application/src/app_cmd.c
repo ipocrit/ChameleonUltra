@@ -23,6 +23,7 @@
 #include "parity.h"
 #endif
 #include "nfc_14a.h"
+#include "protocols/em410x.h"
 /* Forward declarations for functions added to nfc_14a.c/h in this PR.
  * These are declared here to avoid build failure if nfc_14a.h is not yet
  * updated on the build system. */
@@ -220,6 +221,19 @@ static data_frame_tx_t *cmd_processor_set_sleep_timeout(uint16_t cmd, uint16_t s
         return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
     }
     settings_set_sleep_timeout(data[0]);
+    return data_frame_make(cmd, STATUS_SUCCESS, 0, NULL);
+}
+
+static data_frame_tx_t *cmd_processor_get_slot_poll(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    uint8_t enabled = settings_get_slot_poll_enable() ? 1 : 0;
+    return data_frame_make(cmd, STATUS_SUCCESS, 1, &enabled);
+}
+
+static data_frame_tx_t *cmd_processor_set_slot_poll(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    if (length != 1 || data[0] > 1) {
+        return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
+    }
+    settings_set_slot_poll_enable(data[0] != 0);
     return data_frame_make(cmd, STATUS_SUCCESS, 0, NULL);
 }
 
@@ -960,6 +974,20 @@ static data_frame_tx_t *cmd_processor_set_active_slot(uint16_t cmd, uint16_t sta
     return data_frame_make(cmd, STATUS_SUCCESS, 0, NULL);
 }
 
+static tag_specific_type_t preserve_em410x_variant_for_gui(uint8_t slot, tag_specific_type_t requested_type) {
+    if (requested_type != TAG_TYPE_EM410X) {
+        return requested_type;
+    }
+
+    tag_slot_specific_type_t current_types;
+    tag_emulation_get_specific_types_by_slot(slot, &current_types);
+    if (current_types.tag_lf != TAG_TYPE_EM410X && em410x_is_base_type(current_types.tag_lf)) {
+        return current_types.tag_lf;
+    }
+
+    return requested_type;
+}
+
 static data_frame_tx_t *cmd_processor_set_slot_tag_type(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
     typedef struct {
         uint8_t num_slot;
@@ -974,6 +1002,7 @@ static data_frame_tx_t *cmd_processor_set_slot_tag_type(uint16_t cmd, uint16_t s
     if (payload->num_slot >= TAG_MAX_SLOT_NUM || !is_tag_specific_type_valid(tag_type)) {
         return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
     }
+    tag_type = preserve_em410x_variant_for_gui(payload->num_slot, tag_type);
     tag_emulation_change_type(payload->num_slot, tag_type);
     return data_frame_make(cmd, STATUS_SUCCESS, 0, NULL);
 }
@@ -1008,6 +1037,7 @@ static data_frame_tx_t *cmd_processor_set_slot_data_default(uint16_t cmd, uint16
     if (payload->num_slot >= TAG_MAX_SLOT_NUM || !is_tag_specific_type_valid(tag_type)) {
         return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
     }
+    tag_type = preserve_em410x_variant_for_gui(payload->num_slot, tag_type);
     status = tag_emulation_factory_data(payload->num_slot, tag_type) ? STATUS_SUCCESS : STATUS_NOT_IMPLEMENTED;
     return data_frame_make(cmd, status, 0, NULL);
 }
@@ -1079,7 +1109,7 @@ static data_frame_tx_t *cmd_processor_wipe_fds(uint16_t cmd, uint16_t status, ui
 static bool get_active_em410x_type(tag_specific_type_t *tag_type_out, uint16_t *id_size_out) {
     tag_slot_specific_type_t tag_types;
     tag_emulation_get_specific_types_by_slot(tag_emulation_get_slot(), &tag_types);
-    if (tag_types.tag_lf == TAG_TYPE_EM410X || tag_types.tag_lf == TAG_TYPE_EM410X_ELECTRA) {
+    if (em410x_is_base_type(tag_types.tag_lf) || tag_types.tag_lf == TAG_TYPE_EM410X_ELECTRA) {
         *tag_type_out = tag_types.tag_lf;
         *id_size_out = (tag_types.tag_lf == TAG_TYPE_EM410X_ELECTRA) ? LF_EM410X_ELECTRA_TAG_ID_SIZE : LF_EM410X_TAG_ID_SIZE;
         return true;
@@ -3010,6 +3040,8 @@ static cmd_data_map_t m_data_cmd_map[] = {
     {    DATA_CMD_SET_BLE_PAIRING_ENABLE,       NULL,                        cmd_processor_set_ble_pairing_enable,        NULL                   },
     {    DATA_CMD_GET_SLEEP_TIMEOUT,            NULL,                        cmd_processor_get_sleep_timeout,             NULL                   },
     {    DATA_CMD_SET_SLEEP_TIMEOUT,            NULL,                        cmd_processor_set_sleep_timeout,             NULL                   },
+    {    DATA_CMD_GET_SLOT_POLL,                NULL,                        cmd_processor_get_slot_poll,                 NULL                   },
+    {    DATA_CMD_SET_SLOT_POLL,                NULL,                        cmd_processor_set_slot_poll,                 NULL                   },
     {    DATA_CMD_GET_ALL_SLOT_NICKS,           NULL,                        cmd_processor_get_all_slot_nicks,            NULL                   },
 
 #if defined(PROJECT_CHAMELEON_ULTRA)

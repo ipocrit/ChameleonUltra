@@ -10,6 +10,7 @@
 #include "nfc_14a_4.h"
 #include "rgb_marquee.h"
 #include "tag_persistence.h"
+#include "protocols/em410x.h"
 
 #define NRF_LOG_MODULE_NAME tag_emu
 #include "nrf_log.h"
@@ -91,6 +92,9 @@ static uint16_t m_slot_config_crc;
 static tag_base_handler_map_t tag_base_map[] = {
     // LF tag emulation
     {TAG_SENSE_LF, TAG_TYPE_EM410X,      lf_tag_data_loadcb,           lf_tag_em410x_data_savecb,    lf_tag_em410x_data_factory,    &m_tag_data_lf},
+    {TAG_SENSE_LF, TAG_TYPE_EM410X_16,   lf_tag_data_loadcb,           lf_tag_em410x_data_savecb,    lf_tag_em410x_data_factory,    &m_tag_data_lf},
+    {TAG_SENSE_LF, TAG_TYPE_EM410X_32,   lf_tag_data_loadcb,           lf_tag_em410x_data_savecb,    lf_tag_em410x_data_factory,    &m_tag_data_lf},
+    {TAG_SENSE_LF, TAG_TYPE_EM410X_64,   lf_tag_data_loadcb,           lf_tag_em410x_data_savecb,    lf_tag_em410x_data_factory,    &m_tag_data_lf},
     {TAG_SENSE_LF, TAG_TYPE_EM410X_ELECTRA, lf_tag_data_loadcb,        lf_tag_em410x_data_savecb,    lf_tag_em410x_data_factory,    &m_tag_data_lf},
     {TAG_SENSE_LF, TAG_TYPE_HID_PROX,    lf_tag_data_loadcb,           lf_tag_hidprox_data_savecb,   lf_tag_hidprox_data_factory,   &m_tag_data_lf},
     {TAG_SENSE_LF, TAG_TYPE_IOPROX,      lf_tag_data_loadcb,           lf_tag_ioprox_data_savecb,    lf_tag_ioprox_data_factory,    &m_tag_data_lf},
@@ -702,7 +706,7 @@ void tag_emulation_factory_init(void) {
         }
     }
 
-    if (slotConfig.slots[0].enabled_lf && slotConfig.slots[0].tag_lf == TAG_TYPE_EM410X) {
+    if (slotConfig.slots[0].enabled_lf && em410x_is_base_type(slotConfig.slots[0].tag_lf)) {
         // Initialize a low -frequency EM410X card in slot 1, if it does not exist.
         get_fds_map_by_slot_sense_type_for_dump(0, TAG_SENSE_LF, &map_info);
         if (!fds_is_exists(map_info.id, map_info.key)) {
@@ -718,7 +722,7 @@ void tag_emulation_factory_init(void) {
         }
     }
 
-    if (slotConfig.slots[2].enabled_lf && slotConfig.slots[2].tag_lf == TAG_TYPE_EM410X) {
+    if (slotConfig.slots[2].enabled_lf && em410x_is_base_type(slotConfig.slots[2].tag_lf)) {
         // Initialize a low -frequency EM410X card in slot 3, if it does not exist.
         get_fds_map_by_slot_sense_type_for_dump(2, TAG_SENSE_LF, &map_info);
         if (!fds_is_exists(map_info.id, map_info.key)) {

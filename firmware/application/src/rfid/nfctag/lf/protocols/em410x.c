@@ -65,6 +65,29 @@ const protocol *em410x_protocols[] = {
 
 size_t em410x_protocols_size = ARRAY_SIZE(em410x_protocols);
 
+bool em410x_is_base_type(tag_specific_type_t type) {
+    return type == TAG_TYPE_EM410X ||
+           type == TAG_TYPE_EM410X_16 ||
+           type == TAG_TYPE_EM410X_32 ||
+           type == TAG_TYPE_EM410X_64;
+}
+
+const protocol *em410x_protocol_for_type(tag_specific_type_t type) {
+    switch (type) {
+        case TAG_TYPE_EM410X_16:
+            return &em410x_16;
+        case TAG_TYPE_EM410X_32:
+            return &em410x_32;
+        case TAG_TYPE_EM410X:
+        case TAG_TYPE_EM410X_64:
+            return &em410x_64;
+        case TAG_TYPE_EM410X_ELECTRA:
+            return &em410x_electra;
+        default:
+            return NULL;
+    }
+}
+
 typedef struct {
     uint8_t data[EM_DATA_SIZE_MAX];
     uint64_t raw;
@@ -317,17 +340,32 @@ bool em410x_electra_decoder_feed(em410x_codec *d, uint16_t interval) {
     return false;
 };
 
-const nrf_pwm_sequence_t *em410x_modulator(em410x_codec *d, uint8_t *buf) {
+static const nrf_pwm_sequence_t *em410x_modulator_with_period(uint8_t *buf, uint16_t counter_top) {
     uint64_t lo = em410x_raw_data(buf);
     for (int i = 0; i < EM_RAW_SIZE; i++) {
         uint16_t msb = 0x00;
         if (IS_SET(lo, EM_RAW_SIZE - i - 1)) {
             msb = (1 << 15);
         }
-        m_em410x_pwm_seq_vals_base[i].channel_0 = msb | 32;
-        m_em410x_pwm_seq_vals_base[i].counter_top = 64;
+        m_em410x_pwm_seq_vals_base[i].channel_0 = msb | (counter_top / 2);
+        m_em410x_pwm_seq_vals_base[i].counter_top = counter_top;
     }
     return &m_em410x_pwm_seq_base;
+};
+
+const nrf_pwm_sequence_t *em410x_64_modulator(em410x_codec *d, uint8_t *buf) {
+    (void)d;
+    return em410x_modulator_with_period(buf, 64);
+};
+
+const nrf_pwm_sequence_t *em410x_32_modulator(em410x_codec *d, uint8_t *buf) {
+    (void)d;
+    return em410x_modulator_with_period(buf, 32);
+};
+
+const nrf_pwm_sequence_t *em410x_16_modulator(em410x_codec *d, uint8_t *buf) {
+    (void)d;
+    return em410x_modulator_with_period(buf, 16);
 };
 
 const nrf_pwm_sequence_t *em410x_electra_modulator(em410x_codec *d, uint8_t *buf) {
@@ -371,7 +409,7 @@ const protocol em410x_64 = {
     .alloc = (codec_alloc)em410x_64_alloc,
     .free = (codec_free)em410x_free,
     .get_data = (codec_get_data)em410x_get_data,
-    .modulator = (modulator)em410x_modulator,
+    .modulator = (modulator)em410x_64_modulator,
     .decoder =
     {
         .start = (decoder_start)em410x_decoder_start,
@@ -386,7 +424,7 @@ const protocol em410x_32 = {
     .alloc = (codec_alloc)em410x_32_alloc,
     .free = (codec_free)em410x_free,
     .get_data = (codec_get_data)em410x_get_data,
-    .modulator = (modulator)em410x_modulator,
+    .modulator = (modulator)em410x_32_modulator,
     .decoder =
     {
         .start = (decoder_start)em410x_decoder_start,
@@ -401,7 +439,7 @@ const protocol em410x_16 = {
     .alloc = (codec_alloc)em410x_16_alloc,
     .free = (codec_free)em410x_free,
     .get_data = (codec_get_data)em410x_get_data,
-    .modulator = (modulator)em410x_modulator,
+    .modulator = (modulator)em410x_16_modulator,
     .decoder =
     {
         .start = (decoder_start)em410x_decoder_start,

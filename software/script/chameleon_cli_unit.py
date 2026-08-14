@@ -6708,7 +6708,7 @@ class HWSlotList(DeviceRequiredUnit):
                 if current != slot:
                     self.cmd.set_active_slot(slot)
                     current = slot
-                if lf_tag_type == TagSpecificType.EM410X:
+                if chameleon_cmd.is_em410x_base_type(lf_tag_type):
                     id = self.cmd.em410x_get_emu_id()
                     print(f'      {"ID:":40}{color_string((CY, id.hex().upper()))}')
                 if lf_tag_type == TagSpecificType.HIDProx:
@@ -7165,6 +7165,32 @@ class HWSettingsSleepTimeout(DeviceRequiredUnit):
         else:
             current = self.cmd.get_sleep_timeout()
             print(f"Current wake timeout: {current} seconds")
+
+
+@hw_settings.command("slotpoll")
+class HWSettingsSlotPoll(DeviceRequiredUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = "Get or set automatic slot polling"
+        parser.add_argument(
+            "-e",
+            "--enable",
+            type=int,
+            choices=[0, 1],
+            required=False,
+            help="1=enable slot polling, 0=disable",
+            metavar="0/1",
+        )
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if args.enable is not None:
+            self.cmd.set_slot_poll(bool(args.enable))
+            print(f"Slot polling {'enabled' if args.enable else 'disabled'}.")
+            print(color_string((CY, "Do not forget to store your settings in flash!")))
+        else:
+            enabled = self.cmd.get_slot_poll()
+            print(f"Slot polling: {'enabled' if enabled else 'disabled'}")
 
 
 @hw_settings.command("bleclearbonds")

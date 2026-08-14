@@ -141,4 +141,7 @@ bool is_valid_uid_size(uint8_t uid_length);
 void nfc_tag_14a_set_reset_enable(bool enable);
 bool nfc_tag_14a_is_reset_enable();
 
+bool nfc_tag_14a_has_session(void);
+bool nfc_tag_14a_is_sensing(void);
+
 #endif

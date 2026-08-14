@@ -59,6 +59,7 @@ const uint16_t ats_fsdi_table[] = {
 static volatile bool m_is_responded = false;
 // Receiving buffer
 static uint8_t m_nfc_rx_buffer[MAX_NFC_RX_BUFFER_SIZE] = { 0x00 };
+static volatile bool m_hf_had_session = false;
 
 /* Optional sniff callback — fires for every received frame */
 static nfc_tag_14a_sniff_cb_t m_sniff_cb = NULL;
@@ -650,6 +651,7 @@ void nfc_tag_14a_event_callback(nrfx_nfct_evt_t const *p_event) {
             sleep_timer_stop();
 
             g_is_tag_emulating = true;
+            m_hf_had_session = false;
             g_usb_led_marquee_enable = false;
 
             set_slot_light_color(RGB_GREEN);
@@ -673,6 +675,7 @@ void nfc_tag_14a_event_callback(nrfx_nfct_evt_t const *p_event) {
         }
         case NRFX_NFCT_EVT_FIELD_LOST: {
             g_is_tag_emulating = false;
+            m_hf_had_session = false;
             // call sleep_timer_start *after* unsetting g_is_tag_emulating
             sleep_timer_start(SLEEP_DELAY_MS_FIELD_NFC_LOST);
 
@@ -721,6 +724,7 @@ void nfc_tag_14a_event_callback(nrfx_nfct_evt_t const *p_event) {
             //   Otherwise, the nrfx_nfct_evt_tx_frameend conditions above will not be triggered, and nrfx_nfct_rx_bytes will not be called
             // All the next communication will have problems. How can I play if there is a problem? Play an egg.
             m_is_responded = false;
+            m_hf_had_session = true;
             // One more layer of pressure stack, but it seems to have little effect on performance
             // This function processes the data sent by the card reader, and then read that you don't need to reply to the card reader. If you need it, reply
             // Don't reply if you don't need it, it makes sense, right?This is science.
@@ -803,6 +807,7 @@ void nfc_tag_14a_sense_switch(bool enable) {
     } else {
         if (!enable) {
             m_nfc_sense_state = NFC_SENSE_STATE_DISABLE;
+            m_hf_had_session = false;
             //Directly anti -initialization NFC peripherals can turn off NFC field induction
             // SDK inside us to call us nrfx_nfct_disable
             nrfx_nfct_uninit();
@@ -822,4 +827,12 @@ void nfc_tag_14a_set_reset_enable(bool enable) {
 
 bool nfc_tag_14a_is_reset_enable() {
     return reset_if_field_lost;
+}
+
+bool nfc_tag_14a_has_session(void) {
+    return m_hf_had_session;
+}
+
+bool nfc_tag_14a_is_sensing(void) {
+    return m_nfc_sense_state == NFC_SENSE_STATE_ENABLE;
 }
