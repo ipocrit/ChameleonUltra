@@ -2,6 +2,12 @@
 
 ![ultra picture](docs/images/ultra-overview.png)
 
+# Polling-enhanced firmware / 轮询增强固件
+
+This `feature/slot-polling-final` branch is a Chameleon Ultra firmware variant based on upstream `v2.2.0`. It adds automatic LF/HF slot polling and related reliability, configuration, and build improvements.
+
+本分支基于上游 `v2.2.0`，提供自动 LF/HF 槽位轮询及相关可靠性、配置和构建优化。完整变更与使用说明见 [POLLING_FIRMWARE.md](POLLING_FIRMWARE.md)。
+
 # ChameleonUltra Authorized Distributors
 
 Lyon, France: [Lab401](https://lab401.com/)
